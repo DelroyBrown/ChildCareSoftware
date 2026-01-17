@@ -119,28 +119,35 @@ class MedicationAdministrationRecordSerializer(
         read_only_fields = ["administered_by"]
 
 
-class DailyLogTimelineSerializer(serializers.ModelSerializer):
+class HistoryUserSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("id", "username")  # keep minimal for now
+
+
+class MARTimelineSerializer(serializers.ModelSerializer):
     event_type = serializers.SerializerMethodField()
+    administered_by = HistoryUserSerializer(read_only=True)
 
     class Meta:
-        model = DailyLog
+        model = MedicationAdministrationRecord
         fields = (
             "id",
             "event_type",
-            "created_at",
-            "summary",
-            "mood",
-            "interventions",
-            "author",
-            "shift",
+            "administered_at",
+            "outcome",
+            "notes",
+            "administered_by",
+            "medication",
         )
 
     def get_event_type(self, obj):
-        return "DAILY_LOG"
+        return "MEDICATION"
 
 
 class IncidentTimelineSerializer(serializers.ModelSerializer):
     event_type = serializers.SerializerMethodField()
+    reported_by = HistoryUserSerializer(read_only=True)
 
     class Meta:
         model = Incident
@@ -160,29 +167,25 @@ class IncidentTimelineSerializer(serializers.ModelSerializer):
         return "INCIDENT"
 
 
-class MARTimelineSerializer(serializers.ModelSerializer):
+class DailyLogTimelineSerializer(serializers.ModelSerializer):
     event_type = serializers.SerializerMethodField()
+    author = HistoryUserSerializer(read_only=True)
 
     class Meta:
-        model = MedicationAdministrationRecord
+        model = DailyLog
         fields = (
             "id",
             "event_type",
-            "administered_at",
-            "outcome",
-            "notes",
-            "administered_by",
-            "medication",
+            "created_at",
+            "summary",
+            "mood",
+            "interventions",
+            "author",
+            "shift",
         )
 
     def get_event_type(self, obj):
-        return "MEDICATION"
-
-
-class HistoryUserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ("id", "username")  # keep minimal
+        return "DAILY_LOG"
 
 
 DIFF_EXCLUDED_FIELDS = {
@@ -218,7 +221,6 @@ class HistoryRecordSerializer(serializers.Serializer):
         if not user:
             return None
         return HistoryUserSerializer(user).data
-
 
     def get_changes(self, obj):
         history_list = self.context.get("history_list")

@@ -32,6 +32,16 @@ http.interceptors.request.use((config) => {
 let isRefreshing = false;
 let pending = [];
 
+function resolvePending(newToken) {
+    pending.forEach((cb) => cb(newToken));
+    pending = [];
+}
+
+function rejectPending(err) {
+    pending.forEach((cb) => cb(null, err));
+    pending = [];
+}
+
 http.interceptors.response.use(
     (res) => res,
     async (error) => {
@@ -50,8 +60,9 @@ http.interceptors.response.use(
         }
 
         if (isRefreshing) {
-            return new Promise((resolve) => {
-                pending.push((newToken) => {
+            return new Promise((resolve, reject) => {
+                pending.push((newToken, err) => {
+                    if (err) return reject(err);
                     original.headers.Authorization = `Bearer ${newToken}`;
                     resolve(http(original));
                 });
@@ -64,13 +75,18 @@ http.interceptors.response.use(
             const r = await axios.post("/api/auth/token/refresh/", { refresh });
             const newAccess = r.data.access;
 
-            tokenStore.setTokens(newAccess);
+            // refresh token unchanged, so pass it explicitly for clarity
+            tokenStore.setTokens(newAccess, refresh);
 
-            pending.forEach((cb) => cb(newAccess));
-            pending = [];
+            resolvePending(newAccess);
 
             original.headers.Authorization = `Bearer ${newAccess}`;
             return http(original);
+        } catch (err) {
+            // refresh failed -> hard logout + unblock everyone
+            tokenStore.clear();
+            rejectPending(err);
+            throw err;
         } finally {
             isRefreshing = false;
         }

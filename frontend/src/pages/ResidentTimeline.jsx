@@ -106,7 +106,7 @@ function EventCard({ e }) {
                         color: "#777",
                     }}
                 >
-                    Recorded by user #{recordedBy}
+                    Recorded by user #{recordedBy?.username ?? `user #${recordedBy?.id}`}
                 </div>
             )}
         </div>

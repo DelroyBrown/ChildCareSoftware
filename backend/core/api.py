@@ -35,11 +35,13 @@ class ResidentTimelineAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        logs = DailyLog.objects.filter(resident=resident)
-        incidents = Incident.objects.filter(resident=resident)
+        logs = DailyLog.objects.filter(resident=resident).select_related("author")
+        incidents = Incident.objects.filter(resident=resident).select_related(
+            "reported_by"
+        )
         mar = MedicationAdministrationRecord.objects.filter(
             medication__resident=resident
-        )
+        ).select_related("administered_by", "medication")
 
         combined = []
 
@@ -72,11 +74,8 @@ class ResidentTimelineAPIView(APIView):
         return Response(
             {
                 "resident_id": resident.id,
-                # "resident_name": str(resident),
                 "resident_name": resident.legal_name,
                 "events": combined,
             },
             status=status.HTTP_200_OK,
         )
-
-        
