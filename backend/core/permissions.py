@@ -25,6 +25,9 @@ class IsReporterOrManager(BasePermission):
     Read access is handled by IsStaff
     """
 
+    def has_permission(self, request, view):
+        return True
+
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
@@ -38,6 +41,9 @@ class IsAdministererOrManager(BasePermission):
     For MAR: allow edits if user is administered_by OR is manager.
     Read access is handled by IsStaff
     """
+
+    def has_permission(self, request, view):
+        return True
 
     def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:

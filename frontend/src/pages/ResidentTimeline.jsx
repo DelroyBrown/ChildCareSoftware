@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getResidentTimeline } from "../api/timeline";
+import { useNavigate } from "react-router-dom";
 
 function formatDate(isoString) {
     // kept it simple for now
@@ -7,7 +8,7 @@ function formatDate(isoString) {
     return isNaN(d.getTime()) ? isoString : d.toLocaleString();
 }
 
-function EventCard({ e }) {
+function EventCard({ e, onOpen }) {
     const type = e.event_type;
 
     const label =
@@ -46,9 +47,13 @@ function EventCard({ e }) {
                     ? e.administered_by
                     : null;
 
+    const clickable = typeof onOpen === "function";
+
     return (
         <div
+            onClick={clickable ? onOpen : undefined}
             style={{
+                cursor: clickable ? "pointer" : "default",
                 border: "1px solid #ddd",
                 borderRadius: 10,
                 padding: 14,
@@ -118,6 +123,7 @@ export default function ResidentTimeline({ residentId }) {
     const [data, setData] = useState(null);
     const [status, setStatus] = useState("idle");
     const [error, setError] = useState("");
+    const navigate = useNavigate();
 
     useEffect(() => {
         if (!residentId) return;
@@ -178,10 +184,17 @@ export default function ResidentTimeline({ residentId }) {
                             <EventCard
                                 key={`${e.event_type ?? "UNKNOWN"}-${e.id ?? idx}`}
                                 e={e}
+                                onOpen={() => {
+                                    const id = e.id;
+                                    if (!id) return;
+
+                                    if (e.event_type === "INCIDENT") navigate(`/incidents/${id}`);
+                                    else if (e.event_type === "DAILY_LOG") navigate(`/daily-logs/${id}`);
+                                    else if (e.event_type === "MEDICATION") navigate(`/mar/${id}`);
+                                }}
                             />
                         ))}
                     </div>
-
                 </>
             )}
         </div>
