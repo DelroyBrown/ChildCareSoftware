@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { getResidentTimeline } from "../api/timeline";
+import { getResidentTimeline, searchResidents } from "../api/timeline";
 import { useNavigate } from "react-router-dom";
 
 function formatDate(isoString) {
-    // kept it simple for now
     const d = new Date(isoString);
     return isNaN(d.getTime()) ? isoString : d.toLocaleString();
 }
@@ -20,9 +19,6 @@ function EventCard({ e, onOpen }) {
                     ? "Medication"
                     : "Event";
 
-    const when = e.timestamp;
-
-    // Context / badges
     const contextBits = [];
     if (type === "INCIDENT") {
         if (e.category) contextBits.push(e.category);
@@ -30,12 +26,12 @@ function EventCard({ e, onOpen }) {
         if (e.follow_up_required) contextBits.push("Follow-up required");
     }
 
-    if (type === "DAILY_LOG") {
-        if (e.mood) contextBits.push(`Mood: ${e.mood}`);
+    if (type === "DAILY_LOG" && e.mood) {
+        contextBits.push(`Mood: ${e.mood}`);
     }
 
-    if (type === "MEDICATION") {
-        if (e.outcome) contextBits.push(`Outcome: ${e.outcome}`);
+    if (type === "MEDICATION" && e.outcome) {
+        contextBits.push(`Outcome: ${e.outcome}`);
     }
 
     const recordedBy =
@@ -47,13 +43,11 @@ function EventCard({ e, onOpen }) {
                     ? e.administered_by
                     : null;
 
-    const clickable = typeof onOpen === "function";
-
     return (
         <div
-            onClick={clickable ? onOpen : undefined}
+            onClick={onOpen}
             style={{
-                cursor: clickable ? "pointer" : "default",
+                cursor: "pointer",
                 border: "1px solid #ddd",
                 borderRadius: 10,
                 padding: 14,
@@ -61,70 +55,68 @@ function EventCard({ e, onOpen }) {
                 background: "white",
             }}
         >
-            {/* Header */}
             <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <strong style={{ fontSize: 16 }}>{label}</strong>
+                <strong>{label}</strong>
                 <span style={{ color: "#555", fontSize: 14 }}>
-                    {formatDate(when)}
+                    {formatDate(e.timestamp)}
                 </span>
             </div>
 
-            {/* Context line */}
             {contextBits.length > 0 && (
-                <div
-                    style={{
-                        marginTop: 4,
-                        color: "#666",
-                        fontSize: 13,
-                    }}
-                >
+                <div style={{ marginTop: 4, fontSize: 13, color: "#666" }}>
                     {contextBits.join(" • ")}
                 </div>
             )}
 
-            {/* Main narrative */}
-            {type === "INCIDENT" && e.description && (
-                <p style={{ marginTop: 10 }}>{e.description}</p>
-            )}
+            {e.description && <p style={{ marginTop: 10 }}>{e.description}</p>}
+            {e.summary && <p style={{ marginTop: 10 }}>{e.summary}</p>}
+            {e.notes && <p style={{ marginTop: 10 }}>{e.notes}</p>}
 
-            {type === "DAILY_LOG" && e.summary && (
-                <p style={{ marginTop: 10 }}>{e.summary}</p>
-            )}
-
-            {type === "MEDICATION" && e.notes && (
-                <p style={{ marginTop: 10 }}>{e.notes}</p>
-            )}
-
-            {/* Action / outcome */}
-            {type === "INCIDENT" && e.action_taken && (
-                <p style={{ marginTop: 8, color: "#444" }}>
-                    <strong>Action:</strong> {e.action_taken}
-                </p>
-            )}
-
-            {/* Footer */}
             {recordedBy && (
-                <div
-                    style={{
-                        marginTop: 12,
-                        fontSize: 12,
-                        color: "#777",
-                    }}
-                >
-                    Recorded by user #{recordedBy?.username ?? `user #${recordedBy?.id}`}
+                <div style={{ marginTop: 12, fontSize: 12, color: "#777" }}>
+                    Recorded by {recordedBy?.username ?? `user #${recordedBy?.id}`}
                 </div>
             )}
         </div>
     );
 }
 
+export default function ResidentTimeline() {
+    const [query, setQuery] = useState("");
+    const [matches, setMatches] = useState([]);
+    const [residentId, setResidentId] = useState(null);
 
-export default function ResidentTimeline({ residentId }) {
     const [data, setData] = useState(null);
     const [status, setStatus] = useState("idle");
     const [error, setError] = useState("");
+
     const navigate = useNavigate();
 
+    // Search residents by name
+    useEffect(() => {
+        let cancelled = false;
+
+        async function runSearch() {
+            if (!query.trim()) {
+                setMatches([]);
+                return;
+            }
+
+            try {
+                const results = await searchResidents(query);
+                if (!cancelled) setMatches(results);
+            } catch {
+                if (!cancelled) setMatches([]);
+            }
+        }
+
+        runSearch();
+        return () => {
+            cancelled = true;
+        };
+    }, [query]);
+
+    // Load timeline when resident selected
     useEffect(() => {
         if (!residentId) return;
 
@@ -160,10 +152,51 @@ export default function ResidentTimeline({ residentId }) {
         <div style={{ maxWidth: 900, margin: "24px auto", padding: 16 }}>
             <h2>Resident timeline</h2>
 
-            {!residentId && (
-                <p style={{ color: "#555" }}>
-                    No resident selected yet. (We’ll add a picker next.)
-                </p>
+            {/* Resident name search */}
+            <input
+                placeholder="Type resident name…"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                style={{
+                    width: "100%",
+                    padding: 10,
+                    marginBottom: 8,
+                    borderRadius: 8,
+                    border: "1px solid #ccc",
+                }}
+            />
+
+            {matches.length > 0 && (
+                <div
+                    style={{
+                        border: "1px solid #ddd",
+                        borderRadius: 8,
+                        background: "white",
+                        marginBottom: 16,
+                    }}
+                >
+                    {matches.map((r) => (
+                        <button
+                            key={r.id}
+                            onClick={() => {
+                                setResidentId(r.id);
+                                setQuery(r.display_name);
+                                setMatches([]);
+                            }}
+                            style={{
+                                display: "block",
+                                width: "100%",
+                                padding: 10,
+                                border: "none",
+                                textAlign: "left",
+                                background: "white",
+                                cursor: "pointer",
+                            }}
+                        >
+                            {r.display_name}
+                        </button>
+                    ))}
+                </div>
             )}
 
             {status === "loading" && <p>Loading…</p>}
@@ -171,30 +204,25 @@ export default function ResidentTimeline({ residentId }) {
 
             {status === "ready" && (
                 <>
-                    {/* If your endpoint returns resident metadata, show it */}
                     <div style={{ marginBottom: 16 }}>
                         <strong>{data?.resident_name}</strong>
-                        <div style={{ color: "#666", fontSize: 14 }}>ID: {data?.resident_id}</div>
+                        <div style={{ fontSize: 14, color: "#666" }}>
+                            ID: {data?.resident_id}
+                        </div>
                     </div>
 
-
-                    {/* Timeline items */}
-                    <div>
-                        {(Array.isArray(data?.events) ? data.events : []).map((e, idx) => (
-                            <EventCard
-                                key={`${e.event_type ?? "UNKNOWN"}-${e.id ?? idx}`}
-                                e={e}
-                                onOpen={() => {
-                                    const id = e.id;
-                                    if (!id) return;
-
-                                    if (e.event_type === "INCIDENT") navigate(`/incidents/${id}`);
-                                    else if (e.event_type === "DAILY_LOG") navigate(`/daily-logs/${id}`);
-                                    else if (e.event_type === "MEDICATION") navigate(`/mar/${id}`);
-                                }}
-                            />
-                        ))}
-                    </div>
+                    {(Array.isArray(data?.events) ? data.events : []).map((e, idx) => (
+                        <EventCard
+                            key={`${e.event_type}-${e.id ?? idx}`}
+                            e={e}
+                            onOpen={() => {
+                                if (!e.id) return;
+                                if (e.event_type === "INCIDENT") navigate(`/incidents/${e.id}`);
+                                if (e.event_type === "DAILY_LOG") navigate(`/daily-logs/${e.id}`);
+                                if (e.event_type === "MEDICATION") navigate(`/mar/${e.id}`);
+                            }}
+                        />
+                    ))}
                 </>
             )}
         </div>

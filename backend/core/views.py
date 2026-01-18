@@ -2,6 +2,9 @@ from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
+from django.db.models import Q
 from simple_history.utils import update_change_reason
 from .permissions import (
     IsStaff,
@@ -28,6 +31,7 @@ from .serializers import (
     MedicationAdministrationRecordSerializer,
     HistoryRecordSerializer,
     HistorySummaryEventSerializer,
+    ResidentLookupSerializer,
 )
 
 
@@ -35,6 +39,25 @@ class ResidentViewSet(viewsets.ModelViewSet):
     queryset = Resident.objects.all().order_by("-updated_at")
     serializer_class = ResidentSerializer
     permission_classes = [IsManager]
+
+    @action(
+        detail=False,
+        methods=["get"],
+        permission_classes=[IsAuthenticated],
+        url_path="lookup",
+    )
+    def lookup(self, request):
+        q = request.query_params.get("q", "").strip()
+
+        if not q:
+            return Response([])
+
+        residents = Resident.objects.filter(
+            Q(legal_name__icontains=q) | Q(preferred_name__icontains=q)
+        ).order_by("legal_name")[:10]
+
+        serializer = ResidentLookupSerializer(residents, many=True)
+        return Response(serializer.data)
 
 
 class ShiftViewSet(viewsets.ModelViewSet):

@@ -79,6 +79,18 @@ class ResidentSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
+class ResidentLookupSerializer(serializers.ModelSerializer):
+    display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Resident
+        fields = ["id", "legal_name"]
+        fields = ["id", "display_name"]
+
+    def get_display_name(self, obj):
+        return f"{obj.preferred_name} {obj.legal_name}"
+
+
 class ShiftSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shift
