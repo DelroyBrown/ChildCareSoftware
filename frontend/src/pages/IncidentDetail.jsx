@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { http } from "../api/http";
+import { useCurrentResident } from "../context/CurrentResidentContext";
 
 function formatDT(value) {
     if (!value) return "—";
@@ -33,6 +34,7 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                             </div>
                             <div style={{ fontSize: 13, opacity: 0.8 }}>{formatDT(e.at)}</div>
                         </div>
+
                         <div style={{ fontSize: 13, textAlign: "right" }}>
                             <div>
                                 <strong>Reason:</strong> {e.reason?.type || "—"}
@@ -59,8 +61,8 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                                     >
                                         <div style={{ fontWeight: 600 }}>{c.field}</div>
                                         <div style={{ fontSize: 13, opacity: 0.9 }}>
-                                            <strong>From:</strong> {c.from ?? "—"} &nbsp;→&nbsp; <strong>To:</strong>{" "}
-                                            {c.to ?? "—"}
+                                            <strong>From:</strong> {c.from ?? "—"} &nbsp;→&nbsp;{" "}
+                                            <strong>To:</strong> {c.to ?? "—"}
                                         </div>
                                     </div>
                                 ))}
@@ -75,6 +77,7 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
 
 export default function IncidentDetail() {
     const { id } = useParams();
+    const { resident } = useCurrentResident(); // ✅ call the hook
 
     const [data, setData] = useState(null);
     const [status, setStatus] = useState("loading");
@@ -84,7 +87,7 @@ export default function IncidentDetail() {
     const [activeTab, setActiveTab] = useState("details");
     const [canSeeAudit, setCanSeeAudit] = useState(false);
     const [auditEvents, setAuditEvents] = useState([]);
-    const [auditStatus, setAuditStatus] = useState("idle"); // idle|loading|ready|error
+    const [auditStatus, setAuditStatus] = useState("idle");
     const [auditError, setAuditError] = useState("");
 
     useEffect(() => {
@@ -102,7 +105,6 @@ export default function IncidentDetail() {
             setAuditError("");
 
             try {
-                // Incident detail
                 const res = await http.get(`/api/incidents/${id}/`);
                 if (!cancelled) {
                     setData(res.data);
@@ -139,13 +141,11 @@ export default function IncidentDetail() {
                     return;
                 }
 
-                // Anything else: if they're a manager we want a useful error.
                 if (!cancelled) {
                     setCanSeeAudit(true);
                     setAuditStatus("error");
                     setAuditError(
-                        err?.response?.data?.detail ||
-                        `Failed to load audit (HTTP ${code || "?"}).`
+                        err?.response?.data?.detail || `Failed to load audit (HTTP ${code || "?"}).`
                     );
                 }
             }
@@ -176,7 +176,10 @@ export default function IncidentDetail() {
 
     return (
         <div style={{ maxWidth: 900, margin: "24px auto", padding: 16 }}>
-            <Link to="/">← Back</Link>
+            <Link to="/">
+                ← Back{resident ? ` to ${resident.display_name} timeline` : ""}
+            </Link>
+
             <h2 style={{ marginTop: 12 }}>Incident #{id}</h2>
 
             {status === "loading" && <p>Loading…</p>}
@@ -214,8 +217,7 @@ export default function IncidentDetail() {
                                 <strong>Action taken:</strong> {data.action_taken || "—"}
                             </p>
                             <p>
-                                <strong>Follow-up required:</strong>{" "}
-                                {data.follow_up_required ? "Yes" : "No"}
+                                <strong>Follow-up required:</strong> {data.follow_up_required ? "Yes" : "No"}
                             </p>
                         </div>
                     )}
