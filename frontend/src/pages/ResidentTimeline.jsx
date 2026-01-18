@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { getResidentTimeline, searchResidents } from "../api/timeline";
+import { getResidentTimeline } from "../api/timeline";
 import { useNavigate } from "react-router-dom";
+import { useCurrentResident } from "../context/CurrentResidentContext";
 
 function formatDate(isoString) {
     const d = new Date(isoString);
@@ -26,13 +27,8 @@ function EventCard({ e, onOpen }) {
         if (e.follow_up_required) contextBits.push("Follow-up required");
     }
 
-    if (type === "DAILY_LOG" && e.mood) {
-        contextBits.push(`Mood: ${e.mood}`);
-    }
-
-    if (type === "MEDICATION" && e.outcome) {
-        contextBits.push(`Outcome: ${e.outcome}`);
-    }
+    if (type === "DAILY_LOG" && e.mood) contextBits.push(`Mood: ${e.mood}`);
+    if (type === "MEDICATION" && e.outcome) contextBits.push(`Outcome: ${e.outcome}`);
 
     const recordedBy =
         type === "DAILY_LOG"
@@ -57,9 +53,7 @@ function EventCard({ e, onOpen }) {
         >
             <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <strong>{label}</strong>
-                <span style={{ color: "#555", fontSize: 14 }}>
-                    {formatDate(e.timestamp)}
-                </span>
+                <span style={{ color: "#555", fontSize: 14 }}>{formatDate(e.timestamp)}</span>
             </div>
 
             {contextBits.length > 0 && (
@@ -82,9 +76,8 @@ function EventCard({ e, onOpen }) {
 }
 
 export default function ResidentTimeline() {
-    const [query, setQuery] = useState("");
-    const [matches, setMatches] = useState([]);
-    const [residentId, setResidentId] = useState(null);
+    const { resident } = useCurrentResident();
+    const residentId = resident?.id;
 
     const [data, setData] = useState(null);
     const [status, setStatus] = useState("idle");
@@ -92,33 +85,13 @@ export default function ResidentTimeline() {
 
     const navigate = useNavigate();
 
-    // Search residents by name
     useEffect(() => {
-        let cancelled = false;
-
-        async function runSearch() {
-            if (!query.trim()) {
-                setMatches([]);
-                return;
-            }
-
-            try {
-                const results = await searchResidents(query);
-                if (!cancelled) setMatches(results);
-            } catch {
-                if (!cancelled) setMatches([]);
-            }
+        if (!residentId) {
+            setData(null);
+            setStatus("idle");
+            setError("");
+            return;
         }
-
-        runSearch();
-        return () => {
-            cancelled = true;
-        };
-    }, [query]);
-
-    // Load timeline when resident selected
-    useEffect(() => {
-        if (!residentId) return;
 
         let cancelled = false;
 
@@ -152,52 +125,7 @@ export default function ResidentTimeline() {
         <div style={{ maxWidth: 900, margin: "24px auto", padding: 16 }}>
             <h2>Resident timeline</h2>
 
-            {/* Resident name search */}
-            <input
-                placeholder="Type resident name…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                style={{
-                    width: "100%",
-                    padding: 10,
-                    marginBottom: 8,
-                    borderRadius: 8,
-                    border: "1px solid #ccc",
-                }}
-            />
-
-            {matches.length > 0 && (
-                <div
-                    style={{
-                        border: "1px solid #ddd",
-                        borderRadius: 8,
-                        background: "white",
-                        marginBottom: 16,
-                    }}
-                >
-                    {matches.map((r) => (
-                        <button
-                            key={r.id}
-                            onClick={() => {
-                                setResidentId(r.id);
-                                setQuery(r.display_name);
-                                setMatches([]);
-                            }}
-                            style={{
-                                display: "block",
-                                width: "100%",
-                                padding: 10,
-                                border: "none",
-                                textAlign: "left",
-                                background: "white",
-                                cursor: "pointer",
-                            }}
-                        >
-                            {r.display_name}
-                        </button>
-                    ))}
-                </div>
-            )}
+            {!residentId && <p style={{ color: "#555" }}>Select a resident to view their timeline.</p>}
 
             {status === "loading" && <p>Loading…</p>}
             {status === "error" && <p style={{ color: "crimson" }}>{error}</p>}
@@ -205,10 +133,7 @@ export default function ResidentTimeline() {
             {status === "ready" && (
                 <>
                     <div style={{ marginBottom: 16 }}>
-                        <strong>{data?.resident_name}</strong>
-                        <div style={{ fontSize: 14, color: "#666" }}>
-                            ID: {data?.resident_id}
-                        </div>
+                        <strong>{data?.resident_name ?? resident?.display_name}</strong>
                     </div>
 
                     {(Array.isArray(data?.events) ? data.events : []).map((e, idx) => (

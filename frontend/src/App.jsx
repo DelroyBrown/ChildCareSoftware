@@ -8,40 +8,44 @@ import IncidentDetail from "./pages/IncidentDetail";
 import DailyLogDetail from "./pages/DailyLogDetail";
 import MARDetail from "./pages/MARDetail";
 
+import { CurrentResidentProvider } from "./context/CurrentResidentContext";
+import ResidentSelector from "./components/ResidentSelector";
+
 function Protected({ authed, children }) {
   if (!authed) return <Navigate to="/login" replace />;
   return children;
 }
 
-function Home({ residentId, setResidentId }) {
+function Home() {
   return (
     <div style={{ padding: 16 }}>
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
         <h1>Carehome Staff</h1>
+
+        {/* Shared selector (used once, powers many pages) */}
+        <ResidentSelector />
       </div>
 
-      <ResidentTimeline residentId={residentId} />
+      <ResidentTimeline />
     </div>
   );
 }
 
 export default function App() {
   const [authed, setAuthed] = useState(false);
-  const [residentId, setResidentId] = useState("");
 
   return (
     <BrowserRouter>
       <Routes>
-        <Route
-          path="/login"
-          element={<Login onLogin={() => setAuthed(true)} />}
-        />
+        <Route path="/login" element={<Login onLogin={() => setAuthed(true)} />} />
 
         <Route
           path="/"
           element={
             <Protected authed={authed}>
-              <Home residentId={residentId} setResidentId={setResidentId} />
+              <CurrentResidentProvider>
+                <Home />
+              </CurrentResidentProvider>
             </Protected>
           }
         />
