@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { http } from "../api/http";
 import EditIntentGate from "../components/EditIntentGate";
-import { patchIncident } from "../api/incidents"
+import { patchIncident } from "../api/incidents";
 import { useCurrentResident } from "../context/CurrentResidentContext";
 
 function formatDT(value) {
@@ -34,18 +34,14 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                             <div style={{ fontWeight: 700 }}>
                                 {e.actor?.username || "Unknown user"} — {e.event}
                             </div>
-                            <div style={{ fontSize: 13, opacity: 0.8 }}>
-                                {formatDT(e.at)}
-                            </div>
+                            <div style={{ fontSize: 13, opacity: 0.8 }}>{formatDT(e.at)}</div>
                         </div>
 
                         <div style={{ fontSize: 13, textAlign: "right" }}>
                             <div>
                                 <strong>Reason:</strong> {e.reason?.type || "—"}
                             </div>
-                            <div style={{ opacity: 0.85 }}>
-                                {e.reason?.detail || "—"}
-                            </div>
+                            <div style={{ opacity: 0.85 }}>{e.reason?.detail || "—"}</div>
                         </div>
                     </div>
 
@@ -53,9 +49,7 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
 
                     {!!e.changes?.length && (
                         <div style={{ marginTop: 10 }}>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>
-                                Changes
-                            </div>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Changes</div>
                             <div style={{ display: "grid", gap: 6 }}>
                                 {e.changes.map((c, idx) => (
                                     <div
@@ -69,8 +63,7 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                                     >
                                         <div style={{ fontWeight: 600 }}>{c.field}</div>
                                         <div style={{ fontSize: 13, opacity: 0.9 }}>
-                                            <strong>From:</strong> {c.from ?? "—"} →{" "}
-                                            <strong>To:</strong> {c.to ?? "—"}
+                                            <strong>From:</strong> {c.from ?? "—"} → <strong>To:</strong> {c.to ?? "—"}
                                         </div>
                                     </div>
                                 ))}
@@ -91,7 +84,7 @@ export default function IncidentDetail() {
     const [status, setStatus] = useState("loading");
     const [error, setError] = useState("");
 
-    // Audit
+    // Audit state
     const [activeTab, setActiveTab] = useState("details");
     const [canSeeAudit, setCanSeeAudit] = useState(false);
     const [auditEvents, setAuditEvents] = useState([]);
@@ -110,11 +103,16 @@ export default function IncidentDetail() {
             setStatus("loading");
             setError("");
 
+            // reset audit per record
             setActiveTab("details");
             setCanSeeAudit(false);
             setAuditEvents([]);
             setAuditStatus("idle");
             setAuditError("");
+
+            // reset edit state per record
+            setEditing(false);
+            setIntent(null);
 
             try {
                 const res = await http.get(`/api/incidents/${id}/`);
@@ -133,6 +131,7 @@ export default function IncidentDetail() {
                 }
             }
 
+            // Audit (manager-only). Server decides.
             try {
                 if (!cancelled) setAuditStatus("loading");
                 const a = await http.get(`/api/incidents/${id}/history-summary/`);
@@ -142,7 +141,10 @@ export default function IncidentDetail() {
                     setAuditStatus("ready");
                 }
             } catch (err) {
-                if (err?.response?.status === 403) {
+                const code = err?.response?.status;
+
+                // 403 => not a manager => no tab
+                if (code === 403) {
                     if (!cancelled) {
                         setCanSeeAudit(false);
                         setAuditStatus("idle");
@@ -154,8 +156,7 @@ export default function IncidentDetail() {
                     setCanSeeAudit(true);
                     setAuditStatus("error");
                     setAuditError(
-                        err?.response?.data?.detail ||
-                        `Failed to load audit (HTTP ${err?.response?.status || "?"}).`
+                        err?.response?.data?.detail || `Failed to load audit (HTTP ${code || "?"}).`
                     );
                 }
             }
@@ -184,11 +185,12 @@ export default function IncidentDetail() {
         </button>
     );
 
+    // NEW: “last amended” summary (uses newest history event)
+    const lastAudit = Array.isArray(auditEvents) && auditEvents.length ? auditEvents[0] : null;
+
     return (
         <div style={{ maxWidth: 900, margin: "24px auto", padding: 16 }}>
-            <Link to="/">
-                ← Back{resident ? ` to ${resident.display_name} timeline` : ""}
-            </Link>
+            <Link to="/">← Back{resident ? ` to ${resident.display_name} timeline` : ""}</Link>
 
             <h2 style={{ marginTop: 12 }}>Incident #{id}</h2>
 
@@ -197,6 +199,20 @@ export default function IncidentDetail() {
 
             {status === "ready" && data && (
                 <>
+                    {/* NEW: last amended line (manager-only, derived from auditEvents) */}
+                    {canSeeAudit && lastAudit && (
+                        <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
+                            Last amended by <strong>{lastAudit.actor?.username || "Unknown user"}</strong> on{" "}
+                            <strong>{formatDT(lastAudit.at)}</strong>
+                            {lastAudit.reason?.type ? (
+                                <>
+                                    {" "}
+                                    (<strong>{lastAudit.reason.type}</strong>)
+                                </>
+                            ) : null}
+                        </div>
+                    )}
+
                     <div style={{ display: "flex", gap: 8, margin: "12px 0" }}>
                         <TabButton id="details">Details</TabButton>
                         {canSeeAudit && <TabButton id="audit">Audit</TabButton>}
@@ -213,15 +229,20 @@ export default function IncidentDetail() {
                                 gap: 8,
                             }}
                         >
-                            <p><strong>Occurred:</strong> {data.occurred_at}</p>
-                            <p><strong>Category:</strong> {data.category || "—"}</p>
-                            <p><strong>Severity:</strong> {data.severity || "—"}</p>
+                            <p>
+                                <strong>Occurred:</strong> {data.occurred_at}
+                            </p>
+                            <p>
+                                <strong>Category:</strong> {data.category || "—"}
+                            </p>
+                            <p>
+                                <strong>Severity:</strong> {data.severity || "—"}
+                            </p>
 
                             {!editing && (
                                 <>
                                     <p>
-                                        <strong>Description:</strong>{" "}
-                                        {data.description || "—"}
+                                        <strong>Description:</strong> {data.description || "—"}
                                     </p>
                                     <button type="button" onClick={() => setEditing(true)}>
                                         Edit description
@@ -230,10 +251,7 @@ export default function IncidentDetail() {
                             )}
 
                             {editing && !intent && (
-                                <EditIntentGate
-                                    onCancel={() => setEditing(false)}
-                                    onConfirm={(i) => setIntent(i)}
-                                />
+                                <EditIntentGate onCancel={() => setEditing(false)} onConfirm={(i) => setIntent(i)} />
                             )}
 
                             {editing && intent && (
@@ -241,9 +259,7 @@ export default function IncidentDetail() {
                                     <textarea
                                         rows={4}
                                         value={draftDescription}
-                                        onChange={(e) =>
-                                            setDraftDescription(e.target.value)
-                                        }
+                                        onChange={(e) => setDraftDescription(e.target.value)}
                                     />
                                     <div style={{ display: "flex", gap: 8 }}>
                                         <button
@@ -257,11 +273,14 @@ export default function IncidentDetail() {
                                                     setData(res.data);
                                                     setEditing(false);
                                                     setIntent(null);
+
+                                                    // NEW: refresh audit header immediately after save (manager-only)
+                                                    try {
+                                                        const a = await http.get(`/api/incidents/${id}/history-summary/`);
+                                                        setAuditEvents(a.data || []);
+                                                    } catch { }
                                                 } catch (err) {
-                                                    alert(
-                                                        err?.response?.data?.detail ||
-                                                        "Update rejected by server."
-                                                    );
+                                                    alert(err?.response?.data?.detail || "Update rejected by server.");
                                                 }
                                             }}
                                         >
@@ -272,9 +291,7 @@ export default function IncidentDetail() {
                                             onClick={() => {
                                                 setEditing(false);
                                                 setIntent(null);
-                                                setDraftDescription(
-                                                    data.description || ""
-                                                );
+                                                setDraftDescription(data.description || "");
                                             }}
                                         >
                                             Cancel
@@ -284,12 +301,10 @@ export default function IncidentDetail() {
                             )}
 
                             <p>
-                                <strong>Action taken:</strong>{" "}
-                                {data.action_taken || "—"}
+                                <strong>Action taken:</strong> {data.action_taken || "—"}
                             </p>
                             <p>
-                                <strong>Follow-up required:</strong>{" "}
-                                {data.follow_up_required ? "Yes" : "No"}
+                                <strong>Follow-up required:</strong> {data.follow_up_required ? "Yes" : "No"}
                             </p>
                         </div>
                     )}
@@ -303,11 +318,7 @@ export default function IncidentDetail() {
                                 padding: 14,
                             }}
                         >
-                            <AuditPanel
-                                auditStatus={auditStatus}
-                                auditError={auditError}
-                                auditEvents={auditEvents}
-                            />
+                            <AuditPanel auditStatus={auditStatus} auditError={auditError} auditEvents={auditEvents} />
                         </div>
                     )}
                 </>

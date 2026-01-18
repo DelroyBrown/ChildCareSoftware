@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-const REASONS = [
+const EDIT_REASONS = [
     { value: "TYPO", label: "Typo correction" },
     { value: "LATE_ENTRY", label: "Late entry" },
     { value: "CLARIFICATION", label: "Clarification" },

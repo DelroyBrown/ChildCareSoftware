@@ -36,6 +36,12 @@ export default function ResidentSelector() {
         };
     }, [query]);
 
+    function clearSelection() {
+        setQuery("");
+        setMatches([]);
+        setResident(null);
+    }
+
     return (
         <div style={{ marginBottom: 16 }}>
             <input
@@ -49,6 +55,22 @@ export default function ResidentSelector() {
                     border: "1px solid #ccc",
                 }}
             />
+
+            {(query || resident) && (
+                <button
+                    type="button"
+                    onClick={clearSelection}
+                    style={{
+                        padding: "0 14px",
+                        borderRadius: 8,
+                        border: "1px sold #ccc",
+                        background: "white",
+                        cursor: "pointer",
+                    }}
+                >
+                    Clear
+                </button>
+            )}
 
             {matches.length > 0 && (
                 <div

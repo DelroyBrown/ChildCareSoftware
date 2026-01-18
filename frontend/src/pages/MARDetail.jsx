@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { http } from "../api/http";
+import { patchMAR } from "../api/mar";
+import EditIntentGate from "../components/EditIntentGate";
 
 function formatDT(value) {
     if (!value) return "—";
@@ -59,8 +61,7 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                                     >
                                         <div style={{ fontWeight: 600 }}>{c.field}</div>
                                         <div style={{ fontSize: 13, opacity: 0.9 }}>
-                                            <strong>From:</strong> {c.from ?? "—"} &nbsp;→&nbsp; <strong>To:</strong>{" "}
-                                            {c.to ?? "—"}
+                                            <strong>From:</strong> {c.from ?? "—"} → <strong>To:</strong> {c.to ?? "—"}
                                         </div>
                                     </div>
                                 ))}
@@ -87,6 +88,11 @@ export default function MARDetail() {
     const [auditStatus, setAuditStatus] = useState("idle");
     const [auditError, setAuditError] = useState("");
 
+    // Edit
+    const [editing, setEditing] = useState(false);
+    const [intent, setIntent] = useState(null);
+    const [draftNotes, setDraftNotes] = useState("");
+
     useEffect(() => {
         let cancelled = false;
 
@@ -100,18 +106,21 @@ export default function MARDetail() {
             setAuditStatus("idle");
             setAuditError("");
 
+            setEditing(false);
+            setIntent(null);
+
             try {
                 const res = await http.get(`/api/mar/${id}/`);
                 if (!cancelled) {
                     setData(res.data);
+                    setDraftNotes(res.data.notes || "");
                     setStatus("ready");
                 }
             } catch (err) {
-                const msg =
-                    err?.response?.data?.detail ||
-                    `Failed to load MAR (HTTP ${err?.response?.status || "?"}).`;
                 if (!cancelled) {
-                    setError(msg);
+                    setError(
+                        err?.response?.data?.detail || `Failed to load MAR (HTTP ${err?.response?.status || "?"}).`
+                    );
                     setStatus("error");
                 }
             }
@@ -139,10 +148,7 @@ export default function MARDetail() {
                 if (!cancelled) {
                     setCanSeeAudit(true);
                     setAuditStatus("error");
-                    setAuditError(
-                        err?.response?.data?.detail ||
-                        `Failed to load audit (HTTP ${code || "?"}).`
-                    );
+                    setAuditError(err?.response?.data?.detail || `Failed to load audit (HTTP ${code || "?"}).`);
                 }
             }
         }
@@ -170,6 +176,9 @@ export default function MARDetail() {
         </button>
     );
 
+    // NEW: “last amended” summary (uses newest history event)
+    const lastAudit = Array.isArray(auditEvents) && auditEvents.length ? auditEvents[0] : null;
+
     return (
         <div style={{ maxWidth: 900, margin: "24px auto", padding: 16 }}>
             <Link to="/">← Back</Link>
@@ -180,6 +189,20 @@ export default function MARDetail() {
 
             {status === "ready" && data && (
                 <>
+                    {/* NEW: last amended line (manager-only, derived from auditEvents) */}
+                    {canSeeAudit && lastAudit && (
+                        <div style={{ marginTop: 6, fontSize: 13, color: "#666" }}>
+                            Last amended by <strong>{lastAudit.actor?.username || "Unknown user"}</strong> on{" "}
+                            <strong>{formatDT(lastAudit.at)}</strong>
+                            {lastAudit.reason?.type ? (
+                                <>
+                                    {" "}
+                                    (<strong>{lastAudit.reason.type}</strong>)
+                                </>
+                            ) : null}
+                        </div>
+                    )}
+
                     <div style={{ display: "flex", gap: 8, margin: "12px 0" }}>
                         <TabButton id="details">Details</TabButton>
                         {canSeeAudit && <TabButton id="audit">Audit</TabButton>}
@@ -192,6 +215,8 @@ export default function MARDetail() {
                                 border: "1px solid #ddd",
                                 borderRadius: 10,
                                 padding: 14,
+                                display: "grid",
+                                gap: 8,
                             }}
                         >
                             <p>
@@ -200,9 +225,64 @@ export default function MARDetail() {
                             <p>
                                 <strong>Outcome:</strong> {data.outcome || "—"}
                             </p>
-                            <p>
-                                <strong>Notes:</strong> {data.notes || "—"}
-                            </p>
+
+                            {!editing && (
+                                <>
+                                    <p>
+                                        <strong>Notes:</strong> {data.notes || "—"}
+                                    </p>
+                                    <button type="button" onClick={() => setEditing(true)}>
+                                        Edit notes
+                                    </button>
+                                </>
+                            )}
+
+                            {editing && !intent && (
+                                <EditIntentGate onCancel={() => setEditing(false)} onConfirm={(i) => setIntent(i)} />
+                            )}
+
+                            {editing && intent && (
+                                <>
+                                    <textarea rows={4} value={draftNotes} onChange={(e) => setDraftNotes(e.target.value)} />
+                                    <div style={{ display: "flex", gap: 8 }}>
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                try {
+                                                    const res = await patchMAR(id, {
+                                                        notes: draftNotes,
+                                                        ...intent,
+                                                    });
+                                                    setData(res.data);
+                                                    setEditing(false);
+                                                    setIntent(null);
+
+                                                    // NEW: refresh audit header immediately after save (manager-only)
+                                                    try {
+                                                        const a = await http.get(`/api/mar/${id}/history-summary/`);
+                                                        setAuditEvents(a.data || []);
+                                                    } catch { }
+                                                } catch (err) {
+                                                    alert(err?.response?.data?.detail || "Update rejected by server.");
+                                                }
+                                            }}
+                                        >
+                                            Save
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setEditing(false);
+                                                setIntent(null);
+                                                setDraftNotes(data.notes || "");
+                                            }}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+
                             <p>
                                 <strong>Medication:</strong> {data.medication || "—"}
                             </p>
@@ -218,11 +298,7 @@ export default function MARDetail() {
                                 padding: 14,
                             }}
                         >
-                            <AuditPanel
-                                auditStatus={auditStatus}
-                                auditError={auditError}
-                                auditEvents={auditEvents}
-                            />
+                            <AuditPanel auditStatus={auditStatus} auditError={auditError} auditEvents={auditEvents} />
                         </div>
                     )}
                 </>
