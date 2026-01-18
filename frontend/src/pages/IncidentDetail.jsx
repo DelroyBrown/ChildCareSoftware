@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { http } from "../api/http";
+import EditIntentGate from "../components/EditIntentGate";
+import { patchIncident } from "../api/incidents"
 import { useCurrentResident } from "../context/CurrentResidentContext";
 
 function formatDT(value) {
@@ -32,14 +34,18 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                             <div style={{ fontWeight: 700 }}>
                                 {e.actor?.username || "Unknown user"} — {e.event}
                             </div>
-                            <div style={{ fontSize: 13, opacity: 0.8 }}>{formatDT(e.at)}</div>
+                            <div style={{ fontSize: 13, opacity: 0.8 }}>
+                                {formatDT(e.at)}
+                            </div>
                         </div>
 
                         <div style={{ fontSize: 13, textAlign: "right" }}>
                             <div>
                                 <strong>Reason:</strong> {e.reason?.type || "—"}
                             </div>
-                            <div style={{ opacity: 0.85 }}>{e.reason?.detail || "—"}</div>
+                            <div style={{ opacity: 0.85 }}>
+                                {e.reason?.detail || "—"}
+                            </div>
                         </div>
                     </div>
 
@@ -47,7 +53,9 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
 
                     {!!e.changes?.length && (
                         <div style={{ marginTop: 10 }}>
-                            <div style={{ fontWeight: 700, marginBottom: 6 }}>Changes</div>
+                            <div style={{ fontWeight: 700, marginBottom: 6 }}>
+                                Changes
+                            </div>
                             <div style={{ display: "grid", gap: 6 }}>
                                 {e.changes.map((c, idx) => (
                                     <div
@@ -61,7 +69,7 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
                                     >
                                         <div style={{ fontWeight: 600 }}>{c.field}</div>
                                         <div style={{ fontSize: 13, opacity: 0.9 }}>
-                                            <strong>From:</strong> {c.from ?? "—"} &nbsp;→&nbsp;{" "}
+                                            <strong>From:</strong> {c.from ?? "—"} →{" "}
                                             <strong>To:</strong> {c.to ?? "—"}
                                         </div>
                                     </div>
@@ -77,18 +85,23 @@ function AuditPanel({ auditStatus, auditError, auditEvents }) {
 
 export default function IncidentDetail() {
     const { id } = useParams();
-    const { resident } = useCurrentResident(); // ✅ call the hook
+    const { resident } = useCurrentResident();
 
     const [data, setData] = useState(null);
     const [status, setStatus] = useState("loading");
     const [error, setError] = useState("");
 
-    // Audit state
+    // Audit
     const [activeTab, setActiveTab] = useState("details");
     const [canSeeAudit, setCanSeeAudit] = useState(false);
     const [auditEvents, setAuditEvents] = useState([]);
     const [auditStatus, setAuditStatus] = useState("idle");
     const [auditError, setAuditError] = useState("");
+
+    // Edit state
+    const [editing, setEditing] = useState(false);
+    const [intent, setIntent] = useState(null);
+    const [draftDescription, setDraftDescription] = useState("");
 
     useEffect(() => {
         let cancelled = false;
@@ -97,7 +110,6 @@ export default function IncidentDetail() {
             setStatus("loading");
             setError("");
 
-            // reset audit per record
             setActiveTab("details");
             setCanSeeAudit(false);
             setAuditEvents([]);
@@ -108,19 +120,19 @@ export default function IncidentDetail() {
                 const res = await http.get(`/api/incidents/${id}/`);
                 if (!cancelled) {
                     setData(res.data);
+                    setDraftDescription(res.data.description || "");
                     setStatus("ready");
                 }
             } catch (err) {
-                const msg =
-                    err?.response?.data?.detail ||
-                    `Failed to load incident (HTTP ${err?.response?.status || "?"}).`;
                 if (!cancelled) {
-                    setError(msg);
+                    setError(
+                        err?.response?.data?.detail ||
+                        `Failed to load incident (HTTP ${err?.response?.status || "?"}).`
+                    );
                     setStatus("error");
                 }
             }
 
-            // Audit (manager-only). Server decides.
             try {
                 if (!cancelled) setAuditStatus("loading");
                 const a = await http.get(`/api/incidents/${id}/history-summary/`);
@@ -130,10 +142,7 @@ export default function IncidentDetail() {
                     setAuditStatus("ready");
                 }
             } catch (err) {
-                const code = err?.response?.status;
-
-                // 403 => not a manager => no tab
-                if (code === 403) {
+                if (err?.response?.status === 403) {
                     if (!cancelled) {
                         setCanSeeAudit(false);
                         setAuditStatus("idle");
@@ -145,7 +154,8 @@ export default function IncidentDetail() {
                     setCanSeeAudit(true);
                     setAuditStatus("error");
                     setAuditError(
-                        err?.response?.data?.detail || `Failed to load audit (HTTP ${code || "?"}).`
+                        err?.response?.data?.detail ||
+                        `Failed to load audit (HTTP ${err?.response?.status || "?"}).`
                     );
                 }
             }
@@ -199,25 +209,87 @@ export default function IncidentDetail() {
                                 border: "1px solid #ddd",
                                 borderRadius: 10,
                                 padding: 14,
+                                display: "grid",
+                                gap: 8,
                             }}
                         >
+                            <p><strong>Occurred:</strong> {data.occurred_at}</p>
+                            <p><strong>Category:</strong> {data.category || "—"}</p>
+                            <p><strong>Severity:</strong> {data.severity || "—"}</p>
+
+                            {!editing && (
+                                <>
+                                    <p>
+                                        <strong>Description:</strong>{" "}
+                                        {data.description || "—"}
+                                    </p>
+                                    <button type="button" onClick={() => setEditing(true)}>
+                                        Edit description
+                                    </button>
+                                </>
+                            )}
+
+                            {editing && !intent && (
+                                <EditIntentGate
+                                    onCancel={() => setEditing(false)}
+                                    onConfirm={(i) => setIntent(i)}
+                                />
+                            )}
+
+                            {editing && intent && (
+                                <>
+                                    <textarea
+                                        rows={4}
+                                        value={draftDescription}
+                                        onChange={(e) =>
+                                            setDraftDescription(e.target.value)
+                                        }
+                                    />
+                                    <div style={{ display: "flex", gap: 8 }}>
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                try {
+                                                    const res = await patchIncident(id, {
+                                                        description: draftDescription,
+                                                        ...intent,
+                                                    });
+                                                    setData(res.data);
+                                                    setEditing(false);
+                                                    setIntent(null);
+                                                } catch (err) {
+                                                    alert(
+                                                        err?.response?.data?.detail ||
+                                                        "Update rejected by server."
+                                                    );
+                                                }
+                                            }}
+                                        >
+                                            Save
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setEditing(false);
+                                                setIntent(null);
+                                                setDraftDescription(
+                                                    data.description || ""
+                                                );
+                                            }}
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+
                             <p>
-                                <strong>Occurred:</strong> {data.occurred_at}
+                                <strong>Action taken:</strong>{" "}
+                                {data.action_taken || "—"}
                             </p>
                             <p>
-                                <strong>Category:</strong> {data.category || "—"}
-                            </p>
-                            <p>
-                                <strong>Severity:</strong> {data.severity || "—"}
-                            </p>
-                            <p>
-                                <strong>Description:</strong> {data.description || "—"}
-                            </p>
-                            <p>
-                                <strong>Action taken:</strong> {data.action_taken || "—"}
-                            </p>
-                            <p>
-                                <strong>Follow-up required:</strong> {data.follow_up_required ? "Yes" : "No"}
+                                <strong>Follow-up required:</strong>{" "}
+                                {data.follow_up_required ? "Yes" : "No"}
                             </p>
                         </div>
                     )}
