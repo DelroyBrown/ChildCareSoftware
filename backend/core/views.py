@@ -166,7 +166,10 @@ class MedicationAdministrationRecordViewSet(viewsets.ModelViewSet):
         reason = serializer.validated_data.get("edit_reason_detail", "")
         serializer.instance._change_reason = reason
 
-        serializer.save()
+        saved = serializer.save()
+
+        if reason:
+            update_change_reason(saved, reason)
 
     def get_permissions(self):
         # Manager-only history endpoints
@@ -177,7 +180,7 @@ class MedicationAdministrationRecordViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def history(self, request, pk=None):
         mar = self.get_object()
-        qs = mar.history.all().order_by("history_date")
+        qs = mar.history.all().order_by("-history_date")
         serializer = HistoryRecordSerializer(
             qs,
             many=True,

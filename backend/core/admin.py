@@ -1,8 +1,10 @@
 from django.contrib import admin
 from django import forms
+from django.core.exceptions import PermissionDenied
 from simple_history.admin import SimpleHistoryAdmin
 from simple_history.utils import update_change_reason
 from .models import (
+    EditReasonCode,
     Resident,
     Shift,
     DailyLog,
@@ -11,6 +13,64 @@ from .models import (
     Medication,
     MedicationAdministrationRecord,
 )
+
+MANAGER_GROUP_NAME = "manager"
+
+
+def user_is_manager(user):
+    return user.is_active and user.groups.filter(name=MANAGER_GROUP_NAME).exists()
+
+
+class CareGradeAdminMixin:
+    """
+    Admin partity with API:
+    - Staff can only view/edit records they created (owner_field)
+    - Managers can view/edit any
+    - Deletes are blocked (both single + bulk)
+    """
+
+    owner_field = None  # e.g "reported_by" or "administered_by"
+
+    # Prevents staff browsing others records
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+
+        if request.user.is_superuser or user_is_manager(request.user):
+            return qs
+
+        if not self.owner_field:
+            return qs.none()
+
+        return qs.filter(**{self.owner_field: request.user})
+
+    # Change permission (prevents direct URL bypass)
+    def has_change_permission(self, request, obj=None):
+        base = super().has_change_permission(request, obj=obj)
+        if not base:
+            return False
+
+        if obj is None:
+            return True
+
+        if request.user.is_superuser or user_is_manager(request.user):
+            return True
+
+        if not self.owner_field:
+            return False
+
+        return getattr(obj, self.owner_field) == request.user
+
+    # Delete lockdown for single and bulk
+    def has_delete_permission(self, request, obj=None) -> bool:
+        return False
+
+    def delete_model(self, request, obj):
+        raise PermissionDenied("Deletion is not permitted for safety-critical records.")
+
+    def delete_queryset(self, request, queryset):
+        raise PermissionDenied(
+            "Bulk deletion is not permitted for safety-critical records."
+        )
 
 
 class RequireEditReasonOnChangeForm(forms.ModelForm):
@@ -55,6 +115,46 @@ class MARAdminForm(RequireEditReasonOnChangeForm):
         fields = "__all__"
 
 
+class AuditIntentAdminForm(forms.ModelForm):
+    """
+    Enforces no meaningful admin edit without:
+    - edit_reason_type (structured dropdown)
+    - edit_reason_detail (free text)
+    """
+
+    AUDIT_FIELDS = {"edit_reason_type", "edit_reason_detail"}
+
+    def clean(self):
+        cleaned = super().clean()
+
+        # Only enforece on edits, not create
+        if not self.instance or not self.instance.pk:
+            return cleaned
+
+        meaningful_changes = [
+            field for field in self.changed_data if field not in self.AUDIT_FIELDS
+        ]
+
+        if not meaningful_changes:
+            # if no meaningful change, allow save
+            return cleaned
+
+        reason_type = cleaned.get("edit_reason_type")
+        reason_detail = (cleaned.get("edit_reason_detail") or "").strip()
+
+        if not reason_type:
+            self.add_error("edit_reason_type", "Required for meaningful amendments.")
+        else:
+            valid_values = set(EditReasonCode.values)
+            if reason_type not in valid_values:
+                self.add_error("edit_reason_type", "Invalid reason code.")
+
+        if not reason_detail:
+            self.add_error("edit_reason_detail", "Required for meaningful amendments.")
+
+        return cleaned
+
+
 @admin.register(Resident)
 class ResidentAdmin(admin.ModelAdmin):
     list_display = ("legal_name", "preferred_name", "is_active", "created_at")
@@ -77,8 +177,9 @@ class DailyLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(Incident)
-class IncidentAdmin(SimpleHistoryAdmin):
-    form = IncidentAdminForm
+class IncidentAdmin(CareGradeAdminMixin, SimpleHistoryAdmin):
+    form = AuditIntentAdminForm
+    owner_field = "reported_by"
     list_display = (
         "resident",
         "category",
@@ -132,8 +233,9 @@ class MedicationAdmin(admin.ModelAdmin):
 
 
 @admin.register(MedicationAdministrationRecord)
-class MedicationAdministrationRecordAdmin(SimpleHistoryAdmin):
-    form = MARAdminForm
+class MedicationAdministrationRecordAdmin(CareGradeAdminMixin, SimpleHistoryAdmin):
+    form = AuditIntentAdminForm
+    owner_field = "administered_by"
     list_display = (
         "medication",
         "administered_by",

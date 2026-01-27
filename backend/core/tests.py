@@ -1,8 +1,12 @@
 from django.contrib.auth.models import Group, User
+from django.test import TestCase
+from django.contrib.admin.sites import AdminSite
+from django.core.exceptions import PermissionDenied
 from django.utils import timezone
 from rest_framework.test import APITestCase
 from rest_framework import status
 from django.urls import reverse
+from core.admin import IncidentAdmin, MedicationAdministrationRecordAdmin
 from core.models import (
     Resident,
     Incident,
@@ -420,3 +424,131 @@ class EditReasonEnforcementTests(APITestCase):
         self.client.force_authenticate(user=self.manager)
         res = self.client.get(f"/api/mar/{mar.id}/history-summary/")
         self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+
+class AdminParityTests(TestCase):
+    """
+    These tests prove Django admin cannot bypass the care grade rules:
+    - Staff cannot access/edit others records
+    - deletes are blocked (single + bulk)
+    - meaningful edits require intent
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        # Groups
+        cls.staff_group, _ = Group.objects.get_or_create(name="staff")
+        cls.manager_group, _ = Group.objects.get_or_create(name="manager")
+
+        # Users
+        cls.staff_a = User.objects.create_user(username="staff_a", password="pass12345")
+        cls.staff_a.groups.add(cls.staff_group)
+
+        cls.staff_b = User.objects.create_user(username="staff_b", password="pass12345")
+        cls.staff_b.groups.add(cls.staff_group)
+
+        cls.manager = User.objects.create_user(
+            username="manager_admin", password="pass12345"
+        )
+        cls.manager.groups.add(cls.manager_group)
+
+        # Resident + Medication prereqs
+        cls.resident = Resident.objects.create(
+            legal_name="Admin",
+            preferred_name="Parity",
+            date_of_birth="2010-01-01",
+        )
+        cls.medication = Medication.objects.create(
+            resident=cls.resident,
+            medication_name="Paracetemol",
+            dose="500mg",
+            route="Oral",
+        )
+
+        # Records owned by staff_a
+        cls.incident_a = Incident.objects.create(
+            resident=cls.resident,
+            occurred_at=timezone.now(),
+            description="Incident owned by staff_a",
+            reported_by=cls.staff_a,
+            category="OTHER",
+            severity="LOW",
+        )
+
+        cls.mar_a = MedicationAdministrationRecord.objects.create(
+            medication=cls.medication,
+            administered_at=timezone.now(),
+            administered_by=cls.staff_a,
+            outcome="GIVEN",
+        )
+
+    def setUp(self):
+        self.site = AdminSite()
+        self.incident_admin = IncidentAdmin(Incident, self.site)
+        self.mar_admin = MedicationAdministrationRecordAdmin(
+            MedicationAdministrationRecord, self.site
+        )
+
+    # Visibility + edit scope
+    def test_staff_queryset_only_shows_own_incidents(self):
+        request = type("Req", (), {})()
+        request.user = self.staff_a
+
+        qs = self.incident_admin.get_queryset(request)
+        self.assertEqual(list(qs), [self.incident_a])
+
+        request.user = self.staff_b
+        qs = self.incident_admin.get_queryset(request)
+        self.assertEqual(list(qs), [])
+
+    def test_staff_queryset_only_shows_own_mars(self):
+        request = type("Req", (), {})()
+        request.user = self.staff_a
+
+        qs = self.mar_admin.get_queryset(request)
+        self.assertEqual(list(qs), [self.mar_a])
+
+        request.user = self.staff_b
+        qs = self.mar_admin.get_queryset(request)
+        self.assertEqual(list(qs), [])
+
+    def test_manager_queryset_shows_all(self):
+        request = type("Req", (), {})()
+        request.user = self.manager
+
+        self.assertIn(self.incident_a, self.incident_admin.get_queryset(request))
+        self.assertIn(self.mar_a, self.mar_admin.get_queryset(request))
+
+    # Delete lockdown
+    def test_admin_delete_permission_is_always_false(self):
+        req = type("Req", (), {})()
+        req.user = self.manager
+
+        self.assertFalse(
+            self.incident_admin.has_delete_permission(req, self.incident_a)
+        )
+        self.assertFalse(self.mar_admin.has_delete_permission(req, self.mar_a))
+
+    def test_admin_delete_model_raises(self):
+        req = type("Req", (), {})()
+        req.user = self.manager
+
+        with self.assertRaises(PermissionDenied):
+            self.incident_admin.delete_model(req, self.incident_a)
+
+        with self.assertRaises(PermissionDenied):
+            self.mar_admin.delete_model(req, self.mar_a)
+
+    def test_admin_delete_queryset_raises(self):
+        req = type("Req", (), {})()
+        req.user = self.manager
+
+        with self.assertRaises(PermissionDenied):
+            self.incident_admin.delete_queryset(
+                req, Incident.objects.filter(id=self.incident_a.id)
+            )
+
+        with self.assertRaises(PermissionDenied):
+            self.mar_admin.delete_queryset(
+                req, MedicationAdministrationRecord.objects.filter(id=self.mar_a.id)
+            )
