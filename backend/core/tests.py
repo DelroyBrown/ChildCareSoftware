@@ -1,5 +1,7 @@
 from django.contrib.auth.models import Group, User
 from django.test import TestCase
+from datetime import timedelta
+from django.conf import settings
 from django.contrib.admin.sites import AdminSite
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
@@ -13,6 +15,7 @@ from core.models import (
     Medication,
     MedicationAdministrationRecord,
     EditReasonCode,
+    DailyLog,
 )
 
 
@@ -552,3 +555,161 @@ class AdminParityTests(TestCase):
             self.mar_admin.delete_queryset(
                 req, MedicationAdministrationRecord.objects.filter(id=self.mar_a.id)
             )
+
+
+class DailyLogLateEntryAPITests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.staff_group, _ = Group.objects.get_or_create(name="staff")
+        cls.manager_group, _ = Group.objects.get_or_create(name="manager")
+
+        cls.staff = User.objects.create_user(username="staff_dl", password="pass12345")
+        cls.staff.groups.add(cls.staff_group)
+
+        cls.other_staff = User.objects.create_user(
+            username="staff_dl2", password="pass12345"
+        )
+        cls.other_staff.groups.add(cls.staff_group)
+
+        cls.manager = User.objects.create_user(
+            username="manager_dl", password="pass12345"
+        )
+        cls.manager.groups.add(cls.manager_group)
+
+        cls.resident = Resident.objects.create(
+            legal_name="Test",
+            preferred_name="Resident",
+            date_of_birth="2018-01-01",
+        )
+
+    def test_create_daily_log_non_late_no_reason_required(self):
+        self.client.force_authenticate(user=self.staff)
+
+        threshold_min = getattr(settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60)
+        event_at = timezone.now() - timedelta(minutes=threshold_min - 1)
+
+        payload = {
+            "resident": self.resident.id,
+            "summary": "Normal entry",
+            "event_at": event_at.isoformat(),
+        }
+
+        res = self.client.post("/api/daily-logs/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data["author"], self.staff.id)
+
+    def test_create_daily_log_late_requires_late_entry_reason_and_detail(self):
+        self.client.force_authenticate(user=self.staff)
+        
+        threshold_min = getattr(settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60)
+        event_at = timezone.now() - timedelta(minutes=threshold_min + 5)
+
+        payload = {
+            "resident" : self.resident.id,
+            "summary": "Late entry",
+            "event_at" : event_at.isoformat(),
+            # Missing reason fields
+        }
+
+        res = self.client.post("/api/daily-logs/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("edit_reason_type", res.data)
+
+    def test_create_daily_log_late_rejects_non_late_entry_reason_code(self):
+        self.client.force_authenticate(user=self.staff)
+        
+        threshold_min = getattr(settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60)
+        event_at = timezone.now() - timedelta(minutes=threshold_min + 5)
+
+        payload = {
+            "resident": self.resident.id,
+            "summary": "Late entry wrong code",
+            "event_at": event_at.isoformat(),
+            "edit_reason_type": EditReasonCode.TYPO,
+            "edit_reason_detail": "Was busy.",
+        }
+
+        res = self.client.post("/api/daily-logs/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("edit_reason_type", res.data)
+
+    def test_create_daily_log_late_succeeds_with_late_entry_reason_and_detail(self):
+        self.client.force_authenticate(user=self.staff)
+        
+        threshold_min = getattr(settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60)
+        event_at = timezone.now() - timedelta(minutes=threshold_min + 5)
+
+        payload = {
+            "resident": self.resident.id,
+            "summary": "Late entry OK",
+            "event_at": event_at.isoformat(),
+            "edit_reason_type": EditReasonCode.LATE_ENTRY,
+            "edit_reason_detail": "Shift escalation prevented immediate recording.",
+        }
+        
+        res = self.client.post("/api/daily-logs/", payload, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+
+    def test_staff_cannot_patch_other_staff_daily_log(self):
+        # Create as staff
+        self.client.force_authenticate(user=self.staff)
+        event_at = timezone.now()
+
+        create = self.client.post(
+            "/api/daily-logs/",
+            {
+                "resident": self.resident.id,
+                "summary": "original",
+                "event_at": event_at.isoformat(),
+            },
+            format="json",
+        )
+        self.assertEqual(create.status_code, status.HTTP_201_CREATED)
+        log_id = create.data["id"]
+
+        # other staff tries to patch
+        self.client.force_authenticate(user=self.other_staff)
+        patch = self.client.patch(
+            f"/api/daily-logs/{log_id}/",
+            {"summary": "Hacked", "edit_reason_detail": "Nope"},
+            format="json",
+        )
+        self.assertEqual(patch.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_can_patch_any_daily_log_with_reason_on_meaningful_change(self):
+        # Create as staff
+        self.client.force_authenticate(user=self.staff)
+        event_at = timezone.now()
+
+        create = self.client.post(
+            "/api/daily-logs/",
+            {"resident": self.resident.id, "summary": "Original", "event_at": event_at.isoformat()},
+            format="json",
+        )
+        log_id = create.data["id"]
+
+        # manager patches (meaningful change must include edit_reason_detail because of mixin)
+        self.client.force_authenticate(user=self.manager)
+        patch = self.client.patch(
+            f"/api/daily-logs/{log_id}/",
+            {
+                "summary": "Clarified wording",
+                "edit_reason_type": EditReasonCode.CLARIFICATION,
+                "edit_reason_detail": "Clarified phrasing for accuracy."
+            },
+            format="json",
+        )
+        self.assertEqual(patch.status_code, status.HTTP_200_OK)
+
+    def test_daily_log_delete_is_blocked(self):
+        self.client.force_authenticate(user=self.staff)
+        event_at = timezone.now()
+
+        create = self.client.post(
+            "/api/daily-logs/",
+            {"resident": self.resident.id, "summary": "To test delete", "event_at": event_at.isoformat()}, format="json",
+        )
+        log_id = create.data["id"]
+
+        delete = self.client.delete(f"/api/daily-logs/{log_id}/")
+        self.assertEqual(delete.status_code, status.HTTP_403_FORBIDDEN)

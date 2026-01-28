@@ -1,4 +1,7 @@
 from django.contrib import admin
+from django.conf import settings
+from django.utils import timezone
+from datetime import timedelta
 from django import forms
 from django.core.exceptions import PermissionDenied
 from simple_history.admin import SimpleHistoryAdmin
@@ -155,6 +158,39 @@ class AuditIntentAdminForm(forms.ModelForm):
         return cleaned
 
 
+class DailyLogAdminForm(AuditIntentAdminForm):
+    """
+    - on CREATE: if late entry, require LATE_ENTRY + detail
+    - On EDIT: reuse AuditIntentAdminForm behaviour (no meaningful edit without intent).
+    """
+
+    def clean(self):
+        cleaned = super().clean()
+
+        event_at = cleaned.get("event_at")
+        reason_type = cleaned.get("edit_reason_type")
+        reason_detail = (cleaned.get("edit_reason_detail") or "").strip()
+
+        if event_at is None:
+            self.add_error("event_at", "Required.")
+            return cleaned
+
+        threshold_min = getattr(settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60)
+        threshold = timedelta(minutes=int(threshold_min))
+        now = timezone.now()
+
+        is_late = event_at < (now - threshold)
+
+        # CREATE enforcement (instance has no pk yet!)
+        if (not self.instance or not self.instance.pk) and is_late:
+            if reason_type != EditReasonCode.LATE_ENTRY:
+                self.add_error("edit_reason_type", "Late entries must use LATE_ENTRY.")
+            if not reason_detail:
+                self.add_error("edit_reason_detail", "Required for late entries.")
+
+        return cleaned
+
+
 @admin.register(Resident)
 class ResidentAdmin(admin.ModelAdmin):
     list_display = ("legal_name", "preferred_name", "is_active", "created_at")
@@ -170,10 +206,22 @@ class ShiftAdmin(admin.ModelAdmin):
 
 
 @admin.register(DailyLog)
-class DailyLogAdmin(admin.ModelAdmin):
-    list_display = ("resident", "author", "created_at")
-    list_filter = ("created_at",)
+class DailyLogAdmin(CareGradeAdminMixin, SimpleHistoryAdmin):
+    form = DailyLogAdminForm
+    owner_field = "author"
+
+    list_display = ("resident", "author", "event_at", "recorded_at")
+    list_filter = ("event_at", "recorded_at")
     search_fields = ("summary",)
+
+    def save_model(self, request, obj, form, change):
+        obj._history_user = request.user
+        super().save_model(request, obj, form, change)
+
+        # Mirror DRF bahaviour. Write change reason on meaningful changes or late-entry create
+        reason = (form.cleaned_data.get("edit_reason_detail") or "").strip()
+        if reason:
+            update_change_reason(obj, reason)
 
 
 @admin.register(Incident)

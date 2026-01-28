@@ -1,4 +1,7 @@
 from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.utils import timezone
+from datetime import timedelta
 from rest_framework import serializers
 from django.db import models
 from .models import (
@@ -85,7 +88,6 @@ class ResidentLookupSerializer(serializers.ModelSerializer):
     class Meta:
         model = Resident
         fields = ["id", "legal_name"]
-        fields = ["id", "display_name"]
 
     def get_display_name(self, obj):
         return f"{obj.preferred_name} {obj.legal_name}"
@@ -97,10 +99,49 @@ class ShiftSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class DailyLogSerializer(serializers.ModelSerializer):
+class DailyLogSerializer(RequireEditReasonOnUpdateMixin, serializers.ModelSerializer):
     class Meta:
         model = DailyLog
         fields = "__all__"
+        read_only_fields = ["author", "recorded_at"]
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+
+        # Create time enforcement for late entry
+        if self.instance is None:
+            event_at = attrs.get("event_at")
+            reason_type = attrs.get("edit_reason_type")
+            reason_detail = (attrs.get("edit_reason_detail") or "").strip()
+
+            if event_at is None:
+                raise serializers.ValidationError(
+                    {"event_at": "This field is required."}
+                )
+
+            threshold_min = getattr(
+                settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60
+            )
+            threshold = timedelta(minutes=int(threshold_min))
+            now = timezone.now()
+
+            is_late = event_at < (now - threshold)
+
+            if is_late:
+                # Must beexplicitly declared as LATE_ENTRY with detail
+                if reason_type != EditReasonCode.LATE_ENTRY:
+                    raise serializers.ValidationError(
+                        {
+                            "edit_reason_type": "Late entries must use reason code LATE_ENTRY."
+                        }
+                    )
+                if not reason_detail:
+                    raise serializers.ValidationError(
+                        {
+                            "edit_reason_detail": "A reason detail is required for late entries."
+                        }
+                    )
+        return attrs
 
 
 class IncidentSerializer(RequireEditReasonOnUpdateMixin, serializers.ModelSerializer):

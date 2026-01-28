@@ -1,4 +1,5 @@
 from rest_framework import viewsets
+from django.db import transaction
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied
@@ -11,6 +12,7 @@ from .permissions import (
     IsManager,
     IsReporterOrManager,
     IsAdministererOrManager,
+    IsAuthorOrManager,
 )
 from .models import (
     Resident,
@@ -68,10 +70,34 @@ class ShiftViewSet(viewsets.ModelViewSet):
 
 class DailyLogViewSet(viewsets.ModelViewSet):
     queryset = DailyLog.objects.select_related("resident", "author").order_by(
-        "-created_at"
+        "-event_at"
     )
     serializer_class = DailyLogSerializer
-    permission_classes = [IsStaff]
+    permission_classes = [IsStaff, IsAuthorOrManager]
+
+    def perform_create(self, serializer):
+        instance = serializer.save(author=self.request.user)
+        instance._history_request = self.request
+
+        # For late entries, also mirror the reason into history_change_reason (human readable audit)
+        reason = (serializer.validated_data.get("edit_reason_detail") or "").strip()
+        if reason:
+            update_change_reason(instance, reason)
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        instance._history_user = self.request.user
+
+        reason = (serializer.validated_data.get("edit_reason_detail") or "").strip()
+        instance._change_reason = reason
+
+        saved = serializer.save()
+
+        if reason:
+            update_change_reason(saved, reason)
+
+    def destroy(self, request, *args, **kwargs):
+        raise PermissionDenied("Deletion is not permitted for clinical records.")
 
 
 class IncidentViewSet(viewsets.ModelViewSet):
@@ -89,20 +115,46 @@ class IncidentViewSet(viewsets.ModelViewSet):
         instance = serializer.instance
 
         instance._history_user = self.request.user
+        instance._history_request = self.request
 
-        reason = serializer.validated_data.get("edit_reason_detail", "")
+        reason = (
+            serializer.validated_data.get("edit_reason_detail") or ""
+        ).strip() or (
+            serializer.validated_data.get("last_edit_reason_detail") or ""
+        ).strip()
+
         instance._change_reason = reason
 
         saved = serializer.save()
 
-        # THIS is what makes history_change_reason non-null reliably
         if reason:
-            update_change_reason(saved, reason)
+            # Ensure we write to the *actual* newest history row created by this save
+            def _write_reason():
+                latest_hist = saved.history.order_by(
+                    "-history_date", "-history_id"
+                ).first()
+                if latest_hist:
+                    latest_hist.history_change_reason = reason
+                    latest_hist.save(update_fields=["history_change_reason"])
+
+            transaction.on_commit(_write_reason)
 
     def get_permissions(self):
         if getattr(self, "action", None) in {"history", "history_summary"}:
             return [IsManager()]
         return [permission() for permission in self.permission_classes]
+
+    @action(detail=True, methods=["get"])
+    def history(self, request, pk=None):
+        incident = self.get_object()
+        qs = incident.history.all().order_by("-history_date")
+
+        serializer = HistoryRecordSerializer(
+            qs,
+            many=True,
+            context={"history_list": list(qs)},  # <-- MUST match qs ordering
+        )
+        return Response(serializer.data)
 
     @action(
         detail=True,
@@ -113,22 +165,11 @@ class IncidentViewSet(viewsets.ModelViewSet):
     def history_summary(self, request, pk=None):
         incident = self.get_object()
         qs = incident.history.all().order_by("-history_date")
-        history_list = list(qs)
 
         serializer = HistorySummaryEventSerializer(
-            qs, many=True, context={"history_list": history_list}
-        )
-        return Response(serializer.data)
-
-    @action(detail=True, methods=["get"])
-    def history(self, request, pk=None):
-        incident = self.get_object()
-        qs = incident.history.all().order_by("-history_date")
-
-        serializer = HistoryRecordSerializer(
             qs,
             many=True,
-            context={"history_list": list(qs)},
+            context={"history_list": list(qs)},  # <-- MUST match qs ordering
         )
         return Response(serializer.data)
 
@@ -157,19 +198,42 @@ class MedicationAdministrationRecordViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         instance = serializer.save(administered_by=self.request.user)
-        instance._history_user = self.request.user  # OK for create
+
+        # Attribute history
+        instance._history_user = self.request.user
+
+        # Optional parity: if a reason was provided on create, mirror it into history_change_reason
+        reason = (serializer.validated_data.get("edit_reason_detail") or "").strip()
+        if reason:
+            update_change_reason(instance, reason)
 
     def perform_update(self, serializer):
-        # Set audit context on the actual instance being saved
-        serializer.instance._history_user = self.request.user
+        instance = serializer.instance
 
-        reason = serializer.validated_data.get("edit_reason_detail", "")
-        serializer.instance._change_reason = reason
+        instance._history_user = self.request.user
+        instance._history_request = self.request
+
+        reason = (
+            serializer.validated_data.get("edit_reason_detail") or ""
+        ).strip() or (
+            serializer.validated_data.get("last_edit_reason_detail") or ""
+        ).strip()
+
+        instance._change_reason = reason
 
         saved = serializer.save()
 
         if reason:
-            update_change_reason(saved, reason)
+
+            def _write_reason():
+                latest_hist = saved.history.order_by(
+                    "-history_date", "-history_id"
+                ).first()
+                if latest_hist:
+                    latest_hist.history_change_reason = reason
+                    latest_hist.save(update_fields=["history_change_reason"])
+
+            transaction.on_commit(_write_reason)
 
     def get_permissions(self):
         # Manager-only history endpoints
@@ -181,10 +245,11 @@ class MedicationAdministrationRecordViewSet(viewsets.ModelViewSet):
     def history(self, request, pk=None):
         mar = self.get_object()
         qs = mar.history.all().order_by("-history_date")
+
         serializer = HistoryRecordSerializer(
             qs,
             many=True,
-            context={"history_list": list(qs)},
+            context={"history_list": list(qs)},  # <-- MUST match qs ordering
         )
         return Response(serializer.data)
 
@@ -197,12 +262,11 @@ class MedicationAdministrationRecordViewSet(viewsets.ModelViewSet):
     def history_summary(self, request, pk=None):
         mar = self.get_object()
         qs = mar.history.all().order_by("-history_date")
-        history_list = list(qs)
 
         serializer = HistorySummaryEventSerializer(
             qs,
             many=True,
-            context={"history_list": history_list},
+            context={"history_list": list(qs)},  # <-- MUST match qs ordering
         )
         return Response(serializer.data)
 

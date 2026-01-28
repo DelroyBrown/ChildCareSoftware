@@ -1,9 +1,10 @@
 from django.db import models
 from django.conf import settings
+from datetime import timedelta
+from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
-# HELPERS
-# ----------------------------------------------
+# HELPERS ----------------------------------------------
 
 
 class EditReasonCode(models.TextChoices):
@@ -53,19 +54,58 @@ class DailyLog(models.Model):
         Resident, on_delete=models.CASCADE, related_name="daily_logs"
     )
     shift = models.ForeignKey(Shift, on_delete=models.SET_NULL, null=True, blank=True)
-
     author = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="daily_logs"
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="daily_log"
     )
-
     summary = models.TextField()
     mood = models.CharField(max_length=50, blank=True)
     interventions = models.TextField(blank=True)
 
-    created_at = models.DateTimeField(auto_now_add=True)
+    # Event vs recorded time
+    event_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the event/observation actually occurred."
+    )
+
+    recorded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Server time when this was recorded."
+    )
+
+    # Audit intent (matched Incident/MAR pattern)
+    edit_reason_type = models.CharField(
+        max_length=32,
+        choices=EditReasonCode.choices,
+        null=True,
+        blank=True,
+        help_text="Structured reason code for amendments / late entry justification.",
+    )
+    edit_reason_detail = models.TextField(
+        blank=True,
+        default="",
+        help_text="Free text explanation required for meaningful amendments / late entry justification.",
+    )
+
+    # history brings daily log into the "spine"
+    history = HistoricalRecords()
 
     def __str__(self):
-        return f"{self.resident} - {self.created_at:%Y-%m-%d}"
+        # Kept human readable since event_at is what matters clinically
+        return f"{self.resident} - {self.event_at:%Y-%m-%d %H:%M}"
+
+    @property
+    def is_late_entry(self) -> bool:
+        """
+        Late entry means the event time is sufficiently earlier than recorded time.
+        The threshold lives in settings "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES"
+        """
+        threshold_min = getattr(settings, "DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES", 60)
+        threshold = timedelta(minutes=int(threshold_min))
+        # recorded_at exists after create. Unsaved instances fall back to "now"
+        recorded = self.recorded_at or timezone.now()
+        return self.event_at < (recorded - threshold)
 
 
 class Incident(models.Model):

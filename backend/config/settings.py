@@ -119,3 +119,5 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 ]
+
+DAILY_LOG_LATE_ENTRY_THRESHOLD_MINUTES = 60

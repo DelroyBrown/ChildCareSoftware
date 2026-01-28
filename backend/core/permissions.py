@@ -51,3 +51,20 @@ class IsAdministererOrManager(BasePermission):
         if request.user.groups.filter(name="manager").exists():
             return True
         return getattr(obj, "administered_by_id", None) == request.user.id
+
+
+class IsAuthorOrManager(BasePermission):
+    """
+    For DailyLog. Allow edits if user is author OR is manager.
+    Read acces is handled by IsStaff
+    """
+
+    def has_permission(self, request, view):
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        if request.user.groups.filter(name="manager").exists():
+            return True
+        return getattr(obj, "author_id", None) == request.user.id
